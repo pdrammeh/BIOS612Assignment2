@@ -1,0 +1,405 @@
+---
+title: "<center> BIOS 612: Advanced GLM,Assignemnt 2 </center>"
+author: ""
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: readable
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+library(tidyverse)
+library("rjags") 
+library(nlme)
+library(lme4)
+library(lattice)
+library(geepack)
+```
+
+
+
+# Question 2
+
+```{r}
+data<-read.delim("cd4.txt")
+data$Visit<-as.factor(data$Visit)
+data$ID<-as.factor(data$ID)
+data$Treatment<-as.factor(data$Treatment)
+plot<-ggplot(data,aes(Visit,CD4Pct,group=ID,colour=Treatment))+geom_line()+
+  geom_point()+
+  scale_color_manual(labels = c("Not Treated", "Treated"),
+                     values = c("blue", "red")) +guides(color=guide_legend("Treatment")) +theme_classic()+
+  labs(title="", x="Month Visit", y="CD4Pct")+theme(plot.title = element_text(hjust = 0.5))
+
+# We produce the plot of the subject-specific trajectories separately per treatment group with
+# a superimposed loess curve. This achieved with the following call to function
+
+data$Treatment<-factor(data$Treatment,levels = c("1","2"),labels = c("Doesn't received Zinc", "Received Zinc"))
+par(mfrow=c(1,2))
+xyplot(CD4Pct ~ VisAge | Treatment, group = ID, data = data, 
+       panel = function (x, y, ...) {
+           panel.xyplot(x, y, type = "l", col = 1, ...)
+           panel.loess(x, y, col = 2, lwd = 2)
+       }, xlab = "Age at Visit", ylab = "CD4 Counts")
+
+
+
+length.no.NA <- function (x) sum(!is.na(x))
+ns <- with(data, tapply(CD4Pct, ID, length.no.NA))
+
+set.seed(123)
+ids <- sample(names(ns)[ns >= 6], 16) 
+xyplot(CD4Pct ~ VisAge | ID,
+       panel = function (x, y, ...) {
+           panel.xyplot(x, y, type = "p", col = 1, ...)
+           panel.loess(x, y, col = 2, lwd = 2, span = 0.8)
+       }, data = data, subset = ID %in% ids, layout = c(4, 4), as.table = TRUE, 
+       xlab = "Age at Visit", ylab = "CD4 Counts")
+
+
+
+####################################################################
+ChildID <- droplevels(data$ID)
+x <- data$VisAge
+cid <- as.numeric(ChildID) ##  Visit ID 
+n <- nrow(data)
+J <- length(levels(ChildID))
+y<-sqrt(data$CD4Pct)
+## Hierarchical
+jData <- list("y", "x", "cid", "n", "J")
+
+#Modelling for varying Intercepts only
+model <- function() {
+  ## Likelihood
+  for (i in 1:n) {
+    y[i] ~ dnorm(a[cid[i]] + b*x[i], sigma[1]^(-2))
+  }
+  ## Priors
+  b ~ dnorm(0, 0.0001)
+  for (j in 1:2) {
+    sigma[j] ~ dgamma(2,0.1)
+  }
+  for (j in 1:J) {
+    a[j] ~ dnorm(mu, sigma[2]^(-2))
+  }
+  mu ~ dnorm(0, 0.0001)
+}
+require(R2jags); invisible(runif(1))
+fit <- jags(model=model, param=c("mu", "sigma", "a", "b"), data=jData, n.iter=20000, n.thin=1)
+plot(fit)
+# fit
+# attach.jags(fit)
+
+
+print(fit)
+#update jags and plot the traces 
+require(lattice)
+
+attach.jags(fit)
+recompile(fit)
+jagsfit.upd<-autojags(fit,n.iter = 10000)
+jagsfit.mcmc<-as.mcmc(jagsfit.upd)
+
+plot(jagsfit.mcmc)
+autocorr.plot(jagsfit.mcmc)
+par(mfrow=c(1,1))
+# crosscorr.plot(jagsfit.mcmc)
+# gelman.diag(jagsfit.mcmc)
+
+jagfitsummary<-summary(jagsfit.mcmc)
+
+library(xtable)
+esti<-jagfitsummary$quantiles[c(3,252,254,255,256),c(1,3,5)]
+regtable1 <- xtable(esti^2)
+print(regtable1, type = "latex")
+
+#prediction for the missing visits
+nn <- length(mu)
+yy <- rnorm(nn, a[,100], sigma[,1])
+yy1 <- rnorm(nn, a[,100], sigma[,1])
+yy2 <- rnorm(nn, a[,100], sigma[,1])
+yy3 <- rnorm(nn, a[,100], sigma[,1])
+yy4 <- rnorm(nn, a[,100], sigma[,1])
+yy5 <- rnorm(nn, a[,100], sigma[,1])
+
+four<-(quantile(yy, c(.5, .025, .975)))^2
+seven<-(quantile(yy1, c(.5, .025, .975)))^2
+ten<-(quantile(yy2, c(.5, .025, .975)))^2
+thirteen<-(quantile(yy3, c(.5, .025, .975)))^2
+sixteen<-(quantile(yy4, c(.5, .025, .975)))^2
+ninteen<-(quantile(yy5, c(.5, .025, .975)))^2
+
+pp<-rbind(four,seven,ten,thirteen,sixteen,ninteen)
+predictable<-xtable(pp)
+print(predictable,typ="latex")
+
+apply(sigma, 2, mean)
+quantile(sigma[,2]^2/sigma[,1]^2, c(.025, .5, .975))
+icc <- sigma[,2]^2/(sigma[,1]^2+sigma[,2]^2)
+quantile(icc, c(.025, .5, .975))
+
+
+#Progression of few children sample from the their ID
+par( mfrow= c(2,2) )
+ind<-as.numeric(c(240,73,3,164))
+for (j in 1:4) {
+  ii <- cid==ind[j]
+plot(jitter(x[ii], amount=.05), y[ii], xlim=c(0.2,13), ylim=range(y), pch=19, col="gray", xlab="Visit Age", ylab=expression(sqrt(CD4pct)),main=paste0("Child ID=",levels(ChildID)[ind[j]]))
+abline(a=median(a[,ind[j]]), b=median(b), col="blue", lwd=3)
+ 
+  
+}
+
+
+# ii<-100
+# plot(jitter(1, amount=.05), y[ii], xlim=c(1,19), ylim=range(y), pch=19, col="gray", xlab="Visit Age", ylab=expression(sqrt(CD4pct)),main=paste0("Child ID=",100))
+# abline(a=median(a[,100]), b=median(b), col="blue", lwd=3)
+ 
+
+
+
+
+
+
+
+
+
+## Modelling for varying Slopes and Intercept##################################### 
+
+model2 <- function() {
+  ## Likelihood
+  for (i in 1:n) {
+    y[i] ~ dnorm(a[cid[i]] + b[cid[i]]*x[i], sigma[3]^(-2))
+  }
+  ## Priors
+  for (j in 1:J) {
+    a[j] ~ dnorm(mu[1], sigma[1]^(-2))
+    b[j] ~ dnorm(mu[2], sigma[2]^(-2))
+  }
+  for (j in 1:2) {
+    mu[j] ~ dnorm(0, 0.001)
+  }
+  for (j in 1:3) {
+    sigma[j] ~ dunif(0,100) 
+  }
+}
+
+
+require(R2jags); invisible(runif(1))
+fit2 <- jags(model=model2, param=c("mu", "sigma", "a", "b"), data=jData, n.iter=20000, n.thin=1)
+# fit
+
+
+#print(fit)
+#update jags and plot the traces 
+require(lattice)
+
+attach.jags(fit2)
+recompile(fit2)
+jagsfit.upd2<-autojags(fit2,n.iter = 10000)
+jagsfit.mcmc2<-as.mcmc(jagsfit.upd2)
+
+plot(jagsfit.mcmc2)
+# autocorr.plot(jagsfit.mcmc)
+par(mfrow=c(1,1))
+# crosscorr.plot(jagsfit.mcmc)
+# gelman.diag(jagsfit.mcmc)
+
+jagfitsummary2<-summary(jagsfit.mcmc2)
+
+
+library(xtable)
+
+est.rows<-c("a[100]","b[100]","sigma[1]", "sigma[2]","sigma[3]","mu[1]","mu[2]")
+esti<-jagfitsummary2$quantiles[,c(1,3,5)]
+
+esti<-esti[rownames(esti) %in% est.rows, ] 
+regtable1 <- xtable(round(esti^2,2))
+print(regtable1, type = "latex")
+
+#prediction
+# nn <- length(mu)
+# yy <- rnorm(nn, a[,100], sigma[,1])
+# (quantile(yy, c(.025, .5, .975)))^2
+
+
+par( mfrow= c(2,2) )
+ind<-as.numeric(c(240,73,3,164))
+for (j in 1:4) {
+  ii <- cid==ind[j]
+plot(jitter(x[ii], amount=.05), y[ii], xlim=c(0.2,13), ylim=range(y), pch=19, col="gray", xlab="Visit Age", ylab=expression(sqrt(CD4pct)),main=paste0("Child ID=",levels(ChildID)[ind[j]]))
+abline(a=median(a[,ind[j]]), b=median(b), col="blue", lwd=3)
+abline(a=median(a[,ind[j]]), b=median(b[,ind[j]]), col="blue", lwd=3)
+  
+}
+
+
+#modelling for varying slope with treatment as a group level predictor
+t<-as.factor(data$Treatment)
+
+jData <- list("y", "x", "cid", "n", "J", "t")
+model3 <- function() {
+  ## Likelihood
+  for (i in 1:n) {
+    y[i] ~ dnorm(a[cid[i]] + b[cid[i]]*x[i], sigma[3]^(-2))
+  }
+  ## Priors
+  for (j in 1:J) {
+    a[j] ~ dnorm(ga[1] + ga[2]*t[j], sigma[1]^(-2))
+    b[j] ~ dnorm(gb[1] + gb[2]*t[j], sigma[2]^(-2))
+  }
+  for (j in 1:2) {
+    ga[j] ~ dnorm(0, 0.001)
+    gb[j] ~ dnorm(0, 0.001)
+  }
+  for (j in 1:3) {
+    sigma[j] ~ dunif(0,100) 
+  }
+}
+require(R2jags); invisible(runif(1))
+fit3 <- jags(model=model3, param=c("ga", "gb", "sigma", "a", "b"), data=jData, n.iter=30000, n.thin=1)
+recompile(fit3)
+attach.jags(fit3)
+jagsfit.upd3<-autojags(fit3,n.iter = 10000)
+jagsfit.mcmc3<-as.mcmc(jagsfit.upd3)
+
+#plot(jagsfit.mcmc)
+# autocorr.plot(jagsfit.mcmc)
+par(mfrow=c(1,1))
+# crosscorr.plot(jagsfit.mcmc)
+# gelman.diag(jagsfit.mcmc)
+
+jagfitsummary3<-summary(jagsfit.mcmc3)
+
+
+library(xtable)
+
+est.rows.model3<-c("a[100]","b[100]","ga[1]","ga[2]","gb[1]","gb[2]","sigma[1]", "sigma[2]","sigma[3]")
+esti<-jagfitsummary3$quantiles[,c(1,3,5)]
+
+esti2<-esti[rownames(esti) %in% est.rows.model3, ] 
+regtable1 <- xtable(esti2)
+print(regtable1, type = "latex")
+
+#Progression
+
+
+## Treatment-level model: Intercepts
+
+data$Treatment<-factor(data$Treatment,levels = c("1","2"),labels = c("Doesn't received Zinc", "Received Zinc"))
+
+par(mfrow=c(1,2))
+plot(data$Treatment[unique(data$ID)], apply(a, 2, mean), ylim=range(y), pch=19, cex=0.5, las=1, ylab=~alpha,xlab="Treatment", main="Treatment Level intercepts")
+abline(mean(ga[,1]), mean(ga[,2]), col="red", lwd=2)
+for (j in 1:251) {
+  lines(rep(t[j], 2), quantile(a[,j], c(.1, .9)), col="blue")
+}
+
+## Treatment-level model: Slopes
+plot(data$Treatment[unique(data$ID)], apply(b, 2, mean), ylim=c(-0.5, -0.02), pch=19, cex=0.5, las=1, ylab=~beta,xlab="Treatment", main="Treatment Level Slopes")
+abline(mean(gb[,1]), mean(gb[,2]), col="red", lwd=2)
+for (j in 1:251) {
+  lines(rep(t[j], 2), quantile(b[,j], c(.1, .9)), col="blue")
+}
+
+
+## Child-level model: Intercepts
+quantile(ga[,1], c(.5, .025, .975))
+quantile(ga[,2], c(.5, .025, .975))
+quantile(gb[,1], c(.5, .025, .975))
+quantile(gb[,2], c(.5, .025, .975))
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#Question 3
+
+```{r,warning=FALSE}
+data2<-read.table("radon.txt")
+data2$floor<-as.factor(data2$floor)
+data2$county<-as.factor(data2$county)
+
+#Scater plot of the data before we begin modelling 
+length.no.NA <- function (x) sum(!is.na(x))
+ns <- with(data2, tapply(log_radon, county, length.no.NA))
+
+set.seed(123)
+ids <- sample(names(ns)[ns >= 6], 16) 
+xyplot(log_radon ~ floor| county,
+       panel = function (x, y, ...) {
+           panel.xyplot(x, y, type = "p", col = 1, ...)
+           panel.loess(x, y, col = 2, lwd = 2, span = 0.8)
+       }, data = data2, subset = county %in% ids, layout = c(4, 4), as.table = TRUE, 
+       xlab = "House level", ylab = "Log radon")
+
+newdat <- expand.grid(floor=unique(data2$floor),
+                  log_uranium=c(min(data2$log_uranium),
+                            max(data2$log_uranium)))
+
+data2$floor<-factor(data2$floor,levels = c("0","1"),labels = c("Basement","First floor"))
+#Fitting our  mixed  using the ML method
+lme1 <- lme(log_radon ~ floor , data = data2, 
+            random = ~ (1+floor+log_uranium) | county,method = "ML")
+#Fitting our model using REML method 
+lme2 <- lme(log_radon ~ floor , data = data2, 
+            random = ~ (1+floor+log_uranium) | county,method="REML")
+
+#We now fit the models using the GEE method
+
+geemod<-geese(log_radon~floor+log_uranium,corstr = "exchangeable", data = data2,id = county,)
+
+
+#fit the Bayesian method
+require(rstanarm)
+modebe<-stan_lmer(log_radon ~ floor+(1+floor+log_uranium|county) , data = data2,chains=2)
+
+bayesplot::color_scheme_set("pink")
+(trace <- plot(modebe, "trace", pars = c("(Intercept)","floor1"),facet_args = list(nrow = 2)))
+
+ 
+
+
+#plot the prediction of the outcome using the MLE method model
+library(ggplot2)
+p <- ggplot(data2, aes(x=log_uranium, y=log_radon, colour=floor))+  geom_point() +
+  geom_line(aes(y=predict(lme1), group=county, color="County Level")) +
+  geom_line(data=newdat, aes(y=predict(lme1, level=0, newdata=newdat), color="House Level")) +
+  scale_color_manual(name="Predictions", values=c("County Level"="blue1", "House Level"="red"))+ labs(title = "Predicted radon level based on county level uranium meausures", x = "log(uranium)", y = "log(radon)", color = "Lines\n")+theme_classic() 
+print(p)
+
+# Diagnostic plots for the models
+par(mfrow=c(2,2))
+trace <- plot(modebe, "trace",pars=c("(Intercept)","floor1"),facet_args = list(nrow = 2))
+pp_check(modebe)+xlab("log(radon)")
+plot(lme1,main="residuals vs fitted values for MLE model in Q 3")
+plot(lme2,main="residuals vs fitted values for RMLE model in Q 3")
+
+qqnorm(residuals(lme1))
+qqnorm(residuals(lme2))
+
+
+```
+
+```{r}
+```
+
